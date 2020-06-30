@@ -1,3 +1,37 @@
+# Only include Motorola DTBs
+ifeq ($(CONFIG_MMI_DEVICE_DTBS),y)
+ifneq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
+$(error Moto DT w/o overlay is undefined!!!)
+endif
+
+# Motorola Device Trees
+dtbo-$(CONFIG_OLSON_DTB) += \
+		sdm710-olson-dvt3c-overlay.dtbo \
+		sdm710-olson-dvt3-overlay.dtbo \
+		sdm670-olson-dvt2-overlay.dtbo \
+		sdm710-olson-dvt1-overlay.dtbo \
+		sdm710-monmouth-evt1-overlay.dtbo
+
+dtbo-$(CONFIG_ASTRO_DTB) += \
+		sdm710-astro-evb-overlay.dtbo \
+		sdm710-astro-dvt1a-overlay.dtbo
+
+dtbo-$(CONFIG_RACERL_DTB) += \
+		sdm710-racerl-evt1-overlay.dtbo \
+		sdm710-racerl-evt2-overlay.dtbo
+
+sdm710-monmouth-evt1-overlay.dtbo-base := sdm710-moto-base.dtb
+sdm710-olson-dvt1-overlay.dtbo-base := sdm710-moto-base.dtb
+sdm670-olson-dvt2-overlay.dtbo-base := sdm670-moto-base.dtb
+sdm710-olson-dvt3-overlay.dtbo-base := sdm710-moto-base.dtb
+sdm710-olson-dvt3c-overlay.dtbo-base := sdm710-moto-base.dtb
+
+sdm710-astro-evb-overlay.dtbo-base := sdm710-astro-base.dtb
+sdm710-astro-dvt1a-overlay.dtbo-base := sdm710-astro-base.dtb
+
+sdm710-racerl-evt1-overlay.dtbo-base := sdm710-racerl-base.dtb
+sdm710-racerl-evt2-overlay.dtbo-base := sdm710-racerl-base.dtb
+else
 dtb-$(CONFIG_ARCH_QCOM)	+= apq8016-sbc.dtb msm8916-mtp.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-mtp.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= apq8096-db820c.dtb
@@ -660,6 +694,7 @@ dtb-$(CONFIG_ARCH_SDM429) += sdm429-mtp.dtb \
 	sdm429-bg-iot-wtp.dtb
 
 endif
+endif  # CONFIG_MMI_DEVICE_DTBS
 
 dtb-$(CONFIG_ARCH_SDM845_VM) += sdm845-vm.dtb
 

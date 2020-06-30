@@ -461,7 +461,7 @@
 					compatible = "android,vendor";
 					dev = "/dev/block/platform/soc/1d84000.ufshc/by-name/vendor";
 					type = "ext4";
-					mnt_flags = "ro,barrier=1,discard";
+					mnt_flags = "ro,barrier=1";
 					fsmgr_flags = "wait,slotselect,avb";
 					status = "ok";
 				};
@@ -1622,6 +1622,7 @@
 		qcom,xprt-linkid = <1>;
 		qcom,xprt-version = <1>;
 		qcom,fragmented-data;
+		qcom,dynamic-wakeup-source;
 	};
 
 	qcom,ipc_router_cdsp_xprt {
@@ -1731,6 +1732,7 @@
 		reg-names = "eud_base";
 		clocks = <&clock_gcc GCC_USB_PHY_CFG_AHB2PHY_CLK>;
 		clock-names = "cfg_ahb_clk";
+		vdda33-supply = <&pm660l_l7>;
 	};
 
 	qcom,llcc@1100000 {
@@ -2988,6 +2990,7 @@
 
 &gpu_cx_gdsc {
 	parent-supply = <&pm660l_s3_level>;
+	vdd_parent-supply = <&pm660l_s3_level>;
 	status = "ok";
 };
 
