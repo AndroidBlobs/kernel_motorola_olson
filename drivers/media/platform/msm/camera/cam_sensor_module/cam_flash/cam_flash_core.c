@@ -525,6 +525,12 @@ static int cam_flash_i2c_delete_req(struct cam_flash_ctrl *fctrl,
 					== 1)) {
 				del_req_id = top;
 				top = fctrl->i2c_data.per_frame[i].request_id;
+			} else if (top >
+				fctrl->i2c_data.per_frame[i].request_id &&
+				del_req_id <
+				fctrl->i2c_data.per_frame[i].request_id) {
+				del_req_id =
+					fctrl->i2c_data.per_frame[i].request_id;
 			}
 		}
 
@@ -1125,7 +1131,13 @@ int cam_flash_i2c_pkt_parser(struct cam_flash_ctrl *fctrl, void *arg)
 		if (i2c_reg_settings->is_settings_valid == true) {
 			i2c_reg_settings->request_id = 0;
 			i2c_reg_settings->is_settings_valid = false;
-			goto update_req_mgr;
+
+			rc = delete_request(i2c_reg_settings);
+			if (rc) {
+				CAM_ERR(CAM_FLASH,
+					"Error deleting req: %d", rc);
+				return rc;
+			}
 		}
 		i2c_reg_settings->is_settings_valid = true;
 		i2c_reg_settings->request_id =
