@@ -207,6 +207,7 @@ module_param_named(
 #define BITE_WDOG_TIMEOUT_8S		0x3
 #define BARK_WDOG_TIMEOUT_MASK		GENMASK(3, 2)
 #define BARK_WDOG_TIMEOUT_SHIFT		2
+#define DCP_CURRENT_UA			1500000
 static int smb2_parse_dt(struct smb2 *chip)
 {
 	struct smb_charger *chg = &chip->chg;
@@ -344,7 +345,13 @@ static int smb2_parse_dt(struct smb2 *chip)
 	chg->fcc_stepper_enable = of_property_read_bool(node,
 					"qcom,fcc-stepping-enable");
 
+	rc = of_property_read_u32(node, "qcom,dcp-current-ua",
+					&chg->dcp_current_ua);
+	if (rc < 0)
+		chg->dcp_current_ua = DCP_CURRENT_UA;
+
 	return 0;
+
 }
 
 /************************
@@ -380,6 +387,9 @@ static enum power_supply_property smb2_usb_props[] = {
 	POWER_SUPPLY_PROP_MOISTURE_DETECTED,
 };
 
+#define SDP_CURRENT_UA			500000
+#define DCP_CURRENT_UA			1500000
+
 static int smb2_usb_get_prop(struct power_supply *psy,
 		enum power_supply_property psp,
 		union power_supply_propval *val)
@@ -408,6 +418,8 @@ static int smb2_usb_get_prop(struct power_supply *psy,
 			val->intval = 1;
 		if (chg->real_charger_type == POWER_SUPPLY_TYPE_UNKNOWN)
 			val->intval = 0;
+		if (chg->typec_mode == POWER_SUPPLY_TYPEC_SINK_AUDIO_ADAPTER)
+			val->intval = 1;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		rc = smblib_get_prop_usb_voltage_max(chg, val);
@@ -423,6 +435,19 @@ static int smb2_usb_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		rc = smblib_get_prop_input_current_settled(chg, val);
+		switch (chg->real_charger_type) {
+		case POWER_SUPPLY_TYPE_USB_CDP:
+		case POWER_SUPPLY_TYPE_USB_DCP:
+			val->intval = max(DCP_CURRENT_UA, val->intval);
+			break;
+		case POWER_SUPPLY_TYPE_USB_FLOAT:
+		case POWER_SUPPLY_TYPE_USB:
+			val->intval = min(SDP_CURRENT_UA, val->intval);
+			break;
+		default:
+			val->intval = 0;
+			break;
+		}
 		break;
 	case POWER_SUPPLY_PROP_TYPE:
 		val->intval = POWER_SUPPLY_TYPE_USB_PD;
@@ -504,8 +529,8 @@ static int smb2_usb_get_prop(struct power_supply *psy,
 					      MOISTURE_VOTER);
 		break;
 	default:
-		pr_err("get prop %d is not supported in usb\n", psp);
-		rc = -EINVAL;
+		pr_debug("get prop %d is not supported in usb\n", psp);
+		val->intval = -EINVAL; /* soft fail */
 		break;
 	}
 	if (rc < 0) {
@@ -666,7 +691,7 @@ static int smb2_usb_port_get_prop(struct power_supply *psy,
 	default:
 		pr_err_ratelimited("Get prop %d is not supported in pc_port\n",
 				psp);
-		return -EINVAL;
+		val->intval = -EINVAL; /* soft fail */
 	}
 
 	if (rc < 0) {
@@ -776,7 +801,7 @@ static int smb2_usb_main_get_prop(struct power_supply *psy,
 		break;
 	default:
 		pr_debug("get prop %d is not supported in usb-main\n", psp);
-		rc = -EINVAL;
+		val->intval = -EINVAL; /* soft fail */
 		break;
 	}
 	if (rc < 0) {
@@ -898,7 +923,7 @@ static int smb2_dc_get_prop(struct power_supply *psy,
 		val->intval = POWER_SUPPLY_TYPE_WIPOWER;
 		break;
 	default:
-		return -EINVAL;
+		val->intval = -EINVAL;
 	}
 	if (rc < 0) {
 		pr_debug("Couldn't get prop %d rc = %d\n", psp, rc);
@@ -1134,8 +1159,8 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 		val->intval = chg->fcc_stepper_enable;
 		break;
 	default:
-		pr_err("batt power supply prop %d not supported\n", psp);
-		return -EINVAL;
+		pr_debug("batt power supply prop %d not supported\n", psp);
+		val->intval = -EINVAL; /* soft fail */
 	}
 
 	if (rc < 0) {
@@ -1256,6 +1281,7 @@ static int smb2_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_SW_JEITA_ENABLED:
 	case POWER_SUPPLY_PROP_DIE_HEALTH:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
 		return 1;
 	default:
 		break;
@@ -1265,8 +1291,8 @@ static int smb2_batt_prop_is_writeable(struct power_supply *psy,
 }
 
 static const struct power_supply_desc batt_psy_desc = {
-	.name = "battery",
-	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.name = "qcom_battery",
+	.type = POWER_SUPPLY_TYPE_MAIN,
 	.properties = smb2_batt_props,
 	.num_properties = ARRAY_SIZE(smb2_batt_props),
 	.get_property = smb2_batt_get_prop,
@@ -1367,6 +1393,9 @@ static int smb2_init_vconn_regulator(struct smb2 *chip)
 	chg->vconn_vreg->rdesc.ops = &smb2_vconn_reg_ops;
 	chg->vconn_vreg->rdesc.of_match = "qcom,smb2-vconn";
 	chg->vconn_vreg->rdesc.name = "qcom,smb2-vconn";
+
+	if (of_get_property(chg->dev->of_node, "vconn-parent-supply", NULL))
+		chg->vconn_vreg->rdesc.supply_name = "vconn-parent";
 
 	chg->vconn_vreg->rdev = devm_regulator_register(chg->dev,
 						&chg->vconn_vreg->rdesc, &cfg);

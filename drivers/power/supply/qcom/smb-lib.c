@@ -368,12 +368,25 @@ int smblib_set_charge_param(struct smb_charger *chg,
 		if (rc < 0)
 			return -EINVAL;
 	} else {
+#ifdef QCOM_BASE
 		if (val_u > param->max_u || val_u < param->min_u) {
 			smblib_err(chg, "%s: %d is out of range [%d, %d]\n",
 				param->name, val_u, param->min_u, param->max_u);
 			return -EINVAL;
 		}
-
+#else
+		if (val_u > param->max_u) {
+			smblib_err(chg,
+				   "%s: %d is out of range [%d] hold to max\n",
+				param->name, val_u, param->max_u);
+			val_u = param->max_u;
+		} else if (val_u < param->min_u) {
+			smblib_err(chg,
+				   "%s: %d is out of range [%d] hold to min\n",
+				param->name, val_u, param->min_u);
+			val_u = param->min_u;
+		}
+#endif
 		val_raw = (val_u - param->min_u) / param->step_u;
 	}
 
@@ -2716,7 +2729,6 @@ int smblib_get_prop_die_health(struct smb_charger *chg,
 
 #define SDP_CURRENT_UA			500000
 #define CDP_CURRENT_UA			1500000
-#define DCP_CURRENT_UA			1500000
 #define HVDCP_CURRENT_UA		3000000
 #define TYPEC_DEFAULT_CURRENT_UA	900000
 #define TYPEC_MEDIUM_CURRENT_UA		1500000
@@ -2730,10 +2742,12 @@ static int get_rp_based_dcp_current(struct smb_charger *chg, int typec_mode)
 		rp_ua = TYPEC_HIGH_CURRENT_UA;
 		break;
 	case POWER_SUPPLY_TYPEC_SOURCE_MEDIUM:
+		rp_ua = TYPEC_MEDIUM_CURRENT_UA;
+		break;
 	case POWER_SUPPLY_TYPEC_SOURCE_DEFAULT:
 	/* fall through */
 	default:
-		rp_ua = DCP_CURRENT_UA;
+		rp_ua = chg->dcp_current_ua;
 	}
 
 	return rp_ua;
@@ -3276,14 +3290,17 @@ int smblib_get_charge_current(struct smb_charger *chg,
 		case DCP_CHARGER_BIT:
 		case OCP_CHARGER_BIT:
 		case FLOAT_CHARGER_BIT:
-			current_ua = DCP_CURRENT_UA;
+			current_ua = chg->dcp_current_ua;
+			break;
+		case SDP_CHARGER_BIT:
+			current_ua = SDP_CURRENT_UA;
 			break;
 		default:
 			current_ua = 0;
 			break;
 		}
 
-		*total_current_ua = max(current_ua, val.intval);
+		*total_current_ua = current_ua;
 		return 0;
 	}
 
@@ -3297,6 +3314,9 @@ int smblib_get_charge_current(struct smb_charger *chg,
 		case OCP_CHARGER_BIT:
 		case FLOAT_CHARGER_BIT:
 			current_ua = chg->default_icl_ua;
+			break;
+		case SDP_CHARGER_BIT:
+			current_ua = SDP_CURRENT_UA;
 			break;
 		default:
 			current_ua = 0;
@@ -3316,7 +3336,7 @@ int smblib_get_charge_current(struct smb_charger *chg,
 		break;
 	}
 
-	*total_current_ua = max(current_ua, val.intval);
+	*total_current_ua = current_ua;
 	return 0;
 }
 
@@ -3877,6 +3897,11 @@ static void smblib_force_legacy_icl(struct smb_charger *chg, int pst)
 	/* while PD is active it should have complete ICL control */
 	if (chg->pd_active)
 		return;
+
+	if (chg->typec_mode == POWER_SUPPLY_TYPEC_SINK_AUDIO_ADAPTER) {
+		vote(chg->usb_icl_votable, LEGACY_UNKNOWN_VOTER, true, 500000);
+		return;
+	}
 
 	switch (pst) {
 	case POWER_SUPPLY_TYPE_USB:
@@ -4502,8 +4527,11 @@ static void smblib_handle_typec_cc_state_change(struct smb_charger *chg)
 		smblib_handle_typec_removal(chg);
 	}
 
+       if (chg->typec_mode == POWER_SUPPLY_TYPEC_SINK_AUDIO_ADAPTER) {
+		vote(chg->usb_icl_votable, OTG_VOTER, false, 0);
+		vote(chg->usb_icl_votable, LEGACY_UNKNOWN_VOTER, true, 500000);
 	/* suspend usb if sink */
-	if ((chg->typec_status[3] & UFP_DFP_MODE_STATUS_BIT)
+	} else if ((chg->typec_status[3] & UFP_DFP_MODE_STATUS_BIT)
 			&& chg->typec_present)
 		vote(chg->usb_icl_votable, OTG_VOTER, true, 0);
 	else
