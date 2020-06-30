@@ -171,6 +171,7 @@ uint16_t diag_debug_mask;
 void *diag_ipc_log;
 #endif
 
+extern uint16_t md_support;
 static void diag_md_session_close(int pid);
 
 /*
@@ -1924,7 +1925,8 @@ static int diag_switch_logging(struct diag_logging_mode_param_t *param)
 		"Switch logging to %d mask:%0x\n", new_mode, peripheral_mask);
 
 	/* Update to take peripheral_mask */
-	if (new_mode != DIAG_MEMORY_DEVICE_MODE) {
+	if (new_mode != DIAG_MEMORY_DEVICE_MODE &&
+		new_mode != DIAG_MULTI_MODE) {
 		diag_update_real_time_vote(DIAG_PROC_MEMORY_DEVICE,
 					   MODE_REALTIME, ALL_PROC);
 	} else {
@@ -2518,6 +2520,15 @@ static void diag_ioctl_query_session_pid(struct diag_query_pid_t *param)
 	"diag: Pid for the active ODL session: %d\n", param->pid);
 }
 
+static int diag_ioctl_md_support_list(unsigned long ioarg)
+{
+	if (copy_to_user((void __user *)ioarg, &md_support,
+		sizeof(md_support)))
+		return -EFAULT;
+	else
+		return 0;
+}
+
 static int diag_ioctl_register_callback(unsigned long ioarg)
 {
 	int err = 0;
@@ -2779,6 +2790,9 @@ long diagchar_compat_ioctl(struct file *filp,
 		else
 			result = 0;
 		break;
+	case DIAG_IOCTL_MD_SUPPORT_LIST:
+		result = diag_ioctl_md_support_list(ioarg);
+		break;
 	}
 	return result;
 }
@@ -2928,6 +2942,9 @@ long diagchar_ioctl(struct file *filp,
 			result = -EFAULT;
 		else
 			result = 0;
+		break;
+	case DIAG_IOCTL_MD_SUPPORT_LIST:
+		result = diag_ioctl_md_support_list(ioarg);
 		break;
 	}
 	return result;
