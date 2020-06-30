@@ -24,6 +24,8 @@
 #include <linux/of_irq.h>
 #include <linux/dma-buf.h>
 #include <linux/memblock.h>
+#include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/bootmem.h>
 
 #include "msm_drv.h"
@@ -48,6 +50,8 @@
 
 #include <soc/qcom/scm.h>
 #include "soc/qcom/secure_buffer.h"
+
+#include "sde_motUtil.h"
 
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
@@ -358,6 +362,7 @@ static int _sde_debugfs_init(struct sde_kms *sde_kms)
 	(void) sde_debugfs_danger_init(sde_kms, debugfs_root);
 	(void) sde_debugfs_vbif_init(sde_kms, debugfs_root);
 	(void) sde_debugfs_core_irq_init(sde_kms, debugfs_root);
+	(void) sde_debugfs_mot_util_init(sde_kms, debugfs_root);
 
 	rc = sde_core_perf_debugfs_init(&sde_kms->perf, debugfs_root);
 	if (rc) {
@@ -868,9 +873,9 @@ static int _sde_kms_splash_smmu_map(struct drm_device *dev, struct msm_mmu *mmu,
 	return ret;
 }
 
-static int _sde_kms_splash_smmu_unmap(struct sde_kms *sde_kms)
+static int _sde_kms_splash_smmu_unmap(struct sde_kms *sde_kms,
+					struct sde_splash_data *data)
 {
-	struct sde_splash_data *data;
 	struct msm_mmu *mmu;
 	int rc = 0;
 
@@ -979,7 +984,8 @@ static void sde_kms_commit(struct msm_kms *kms,
 }
 
 static void _sde_kms_release_splash_resource(struct sde_kms *sde_kms,
-		struct drm_atomic_state *old_state)
+		struct drm_atomic_state *old_state,
+		struct sde_splash_data *splash_data)
 {
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *crtc_state;
@@ -989,7 +995,7 @@ static void _sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 
 	priv = sde_kms->dev->dev_private;
 
-	if (!sde_kms->splash_data.resource_handoff_pending)
+	if (!splash_data->resource_handoff_pending)
 		return;
 
 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
@@ -1004,11 +1010,11 @@ static void _sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 		return;
 	}
 
-	sde_kms->splash_data.resource_handoff_pending = false;
+	splash_data->resource_handoff_pending = false;
 
-	if (sde_kms->splash_data.cont_splash_en) {
+	if (splash_data->cont_splash_en) {
 		SDE_DEBUG("disabling cont_splash feature\n");
-		sde_kms->splash_data.cont_splash_en = false;
+		splash_data->cont_splash_en = false;
 
 		for (i = 0; i < SDE_POWER_HANDLE_DBUS_ID_MAX; i++)
 			sde_power_data_bus_set_quota(&priv->phandle,
@@ -1021,16 +1027,16 @@ static void _sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 			false);
 	}
 
-	if (sde_kms->splash_data.splash_base) {
-		_sde_kms_splash_smmu_unmap(sde_kms);
+	if (splash_data->splash_base) {
+		_sde_kms_splash_smmu_unmap(sde_kms, splash_data);
 
 		rc = _sde_kms_release_splash_buffer(
-			sde_kms->splash_data.splash_base,
-			sde_kms->splash_data.splash_size);
+			splash_data->splash_base,
+			splash_data->splash_size);
 		if (rc)
 			pr_err("failed to release splash memory\n");
-		sde_kms->splash_data.splash_base = 0;
-		sde_kms->splash_data.splash_size = 0;
+		splash_data->splash_base = 0;
+		splash_data->splash_size = 0;
 	}
 }
 
@@ -1081,8 +1087,10 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 
 	sde_power_resource_enable(&priv->phandle, sde_kms->core_client, false);
 
-	_sde_kms_release_splash_resource(sde_kms, old_state);
-
+	_sde_kms_release_splash_resource(sde_kms, old_state,
+						&sde_kms->splash_data);
+	_sde_kms_release_splash_resource(sde_kms, old_state,
+						&sde_kms->splash_data_secDisp);
 	SDE_EVT32_VERBOSE(SDE_EVTLOG_FUNC_EXIT);
 }
 
@@ -1284,9 +1292,13 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.get_mode_info = dsi_conn_get_mode_info,
 		.get_dst_format = dsi_display_get_dst_format,
 		.post_kickoff = dsi_conn_post_kickoff,
+		.set_tearing = dsi_display_set_tearing,
 		.check_status = dsi_display_check_status,
 		.enable_event = dsi_conn_enable_event,
+		.motUtil_transfer = dsi_display_motUtil_transfer,
 		.cmd_transfer = dsi_display_cmd_transfer,
+		.force_esd_disable = dsi_display_force_esd_disable,
+		.set_param = dsi_display_set_param,
 		.cont_splash_config = dsi_display_cont_splash_config,
 		.get_panel_vfp = dsi_display_get_panel_vfp,
 	};
@@ -1302,6 +1314,8 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.get_dst_format = NULL,
 		.check_status = NULL,
 		.cmd_transfer = NULL,
+		.force_esd_disable = NULL,
+		.set_param = NULL,
 		.cont_splash_config = NULL,
 		.get_panel_vfp = NULL,
 	};
@@ -1316,6 +1330,8 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.check_status = NULL,
 		.config_hdr = dp_connector_config_hdr,
 		.cmd_transfer = NULL,
+		.force_esd_disable = NULL,
+		.set_param = NULL,
 		.cont_splash_config = NULL,
 		.get_panel_vfp = NULL,
 	};
@@ -1329,6 +1345,8 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.get_dst_format = dsi_display_get_dst_format,
 		.enable_event = dsi_conn_enable_event,
 		.cmd_transfer = NULL,
+		.force_esd_disable = NULL,
+		.set_param = NULL,
 		.cont_splash_config = NULL,
 	};
 	struct msm_display_info info;
@@ -2069,6 +2087,10 @@ static void _sde_kms_hw_destroy(struct sde_kms *sde_kms,
 	(void)_sde_kms_release_splash_buffer(
 				sde_kms->splash_data.splash_base,
 				sde_kms->splash_data.splash_size);
+	(void)_sde_kms_release_splash_buffer(
+				sde_kms->splash_data_secDisp.splash_base,
+				sde_kms->splash_data_secDisp.splash_size);
+
 
 	/* safe to call these more than once during shutdown */
 	_sde_debugfs_destroy(sde_kms);
@@ -2644,7 +2666,8 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms)
 		return -EINVAL;
 	}
 
-	if (!sde_kms->splash_data.cont_splash_en) {
+	if (!sde_kms->splash_data.cont_splash_en &&
+		!sde_kms->splash_data_secDisp.cont_splash_en) {
 		DRM_INFO("cont_splash feature not enabled\n");
 		return rc;
 	}
@@ -2671,26 +2694,18 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms)
 			((info.is_connected) ? "true" : "false"),
 			((info.is_primary) ? "true" : "false"));
 
-		/**
-		 * Since we are supporting one DSI for splash, use the display
-		 * which is marked as primary.
-		 */
-		if (!info.is_primary)
-			continue;
-		else
-			break;
-	}
-
+	/* The following are part of for-loop. They don't have correct indent
+	 * because trying to avoid issue of merge-conflict during rebasing
+	 */
 	if (!encoder) {
 		SDE_ERROR("encoder not initialized\n");
 		return -EINVAL;
 	}
 
 	priv = sde_kms->dev->dev_private;
-	encoder->crtc = priv->crtcs[0];
+	encoder->crtc = priv->crtcs[i];
 	crtc = encoder->crtc;
 	SDE_DEBUG("crtc id = %d\n", crtc->base.id);
-
 
 	mutex_lock(&dev->mode_config.mutex);
 	connector_list = &dev->mode_config.connector_list;
@@ -2746,7 +2761,6 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms)
 	drm_mode_copy(&crtc->state->adjusted_mode, drm_mode);
 	drm_mode_copy(&crtc->mode, drm_mode);
 
-	/* Update encoder structure */
 	sde_encoder_update_caps_for_cont_splash(encoder);
 
 	sde_crtc_update_cont_splash_mixer_settings(crtc);
@@ -2754,6 +2768,11 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms)
 	sde_conn = to_sde_connector(connector);
 	if (sde_conn && sde_conn->ops.cont_splash_config)
 		sde_conn->ops.cont_splash_config(sde_conn->display);
+
+        /* This closing bracket "}" is of for-loop. it doesn't have correct
+	 * indent because trying to avoid issue of merge-conflict during rebasing
+	 */
+	}
 
 	return rc;
 }
@@ -3136,6 +3155,14 @@ static int _sde_kms_mmu_init(struct sde_kms *sde_kms)
 				SDE_ERROR("failed to map ret:%d\n", ret);
 				goto fail;
 			}
+
+			ret = _sde_kms_splash_smmu_map(sde_kms->dev, mmu,
+					&sde_kms->splash_data_secDisp);
+			if (ret) {
+				SDE_ERROR("failed to map for secDisp. ret:%d\n",
+								ret);
+				goto fail;
+			}
 		}
 
 		/*
@@ -3154,6 +3181,9 @@ static int _sde_kms_mmu_init(struct sde_kms *sde_kms)
 early_map_fail:
 	mmu->funcs->one_to_one_unmap(mmu, sde_kms->splash_data.splash_base,
 					sde_kms->splash_data.splash_size);
+	mmu->funcs->one_to_one_unmap(mmu,
+				sde_kms->splash_data_secDisp.splash_base,
+				sde_kms->splash_data_secDisp.splash_size);
 fail:
 	mmu->funcs->destroy(mmu);
 	_sde_kms_mmu_destroy(sde_kms);
@@ -3233,7 +3263,8 @@ static int sde_kms_pd_disable(struct generic_pm_domain *genpd)
 	return rc;
 }
 
-static int _sde_kms_get_splash_data(struct sde_splash_data *data)
+static int _sde_kms_get_splash_data(struct sde_splash_data *data,
+			const char *mem_name)
 {
 	int ret = 0;
 	struct device_node *parent, *node;
@@ -3248,7 +3279,7 @@ static int _sde_kms_get_splash_data(struct sde_splash_data *data)
 		return -EINVAL;
 	}
 
-	node = of_find_node_by_name(parent, "cont_splash_region");
+	node = of_find_node_by_name(parent, mem_name);
 	if (!node) {
 		SDE_ERROR("failed to find splash memory reservation\n");
 		return -EINVAL;
@@ -3366,7 +3397,8 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 		goto error;
 	}
 
-	rc = _sde_kms_get_splash_data(&sde_kms->splash_data);
+	rc = _sde_kms_get_splash_data(&sde_kms->splash_data,
+					"cont_splash_region");
 	if (rc)
 		SDE_DEBUG("sde splash data fetch failed: %d\n", rc);
 
@@ -3376,6 +3408,12 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 		priv->phandle.data_bus_handle[i].ib_rt =
 			SDE_POWER_HANDLE_CONT_SPLASH_BUS_IB_QUOTA;
 	}
+
+	rc = _sde_kms_get_splash_data(&sde_kms->splash_data_secDisp,
+					"cont_splash_region_secDisp");
+	if (rc)
+		SDE_DEBUG("sde splash data sec disp fetch failed: %d\n", rc);
+
 
 	rc = sde_power_resource_enable(&priv->phandle, sde_kms->core_client,
 		true);
@@ -3406,6 +3444,7 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 	}
 
 	sde_kms->splash_data.resource_handoff_pending = true;
+	sde_kms->splash_data_secDisp.resource_handoff_pending = true;
 
 	rc = _sde_kms_mmu_init(sde_kms);
 	if (rc) {
@@ -3448,6 +3487,11 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 	if (sde_kms->splash_data.splash_base)
 		sde_rm_cont_splash_res_init(priv, &sde_kms->rm,
 					&sde_kms->splash_data,
+					sde_kms->catalog);
+
+	if (sde_kms->splash_data_secDisp.splash_base)
+		sde_rm_cont_splash_res_init(priv, &sde_kms->rm,
+					&sde_kms->splash_data_secDisp,
 					sde_kms->catalog);
 
 	sde_kms->hw_mdp = sde_rm_get_mdp(&sde_kms->rm);

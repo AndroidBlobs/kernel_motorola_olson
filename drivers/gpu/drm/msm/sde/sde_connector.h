@@ -22,8 +22,10 @@
 #include "msm_prop.h"
 #include "sde_kms.h"
 #include "sde_fence.h"
+#include "sde_motUtil.h"
 
 #define SDE_CONNECTOR_NAME_SIZE	16
+#define SDE_ESD_PENDING 0xffff
 
 struct sde_connector;
 struct sde_connector_state;
@@ -226,6 +228,14 @@ struct sde_connector_ops {
 	void (*post_open)(void *display);
 
 	/**
+         * set_tearing - set tearing on/off of connected display panel
+         * @display: Pointer to private display handle
+	 * @enable: tearing on or off
+         * Returns: positive value for success, negetive or zero for failure
+         */
+        int (*set_tearing)(void *display, bool enable);
+
+	/**
 	 * check_status - check status of connected display panel
 	 * @display: Pointer to private display handle
 	 * @te_check_override: Whether check TE from panel or default check
@@ -242,6 +252,32 @@ struct sde_connector_ops {
 	 */
 	int (*cmd_transfer)(void *display, const char *cmd_buf,
 			u32 cmd_buf_len);
+
+	/**
+	 * motUtil_transfer - Convert motUtil data and Transfer command
+	 * 			to the connected display panel
+	 * @display: Pointer to private display handle
+	 * @cmd_buf: Command buffer
+	 * @cmd_buf_len: Command buffer length in bytes
+	 * @motUtil_data: motUtil data information
+	 * Returns: Zero for success, negetive for failure
+	 */
+	int (*motUtil_transfer)(void *display, const char *cmd_buf,
+			u32 cmd_buf_len, struct motUtil *motUtil_data);
+
+	/**
+	 * force_esd_disable - force to disable check_status
+	 * @display: Pointer to private display handle
+	 * Returns: true for forcing ESD disable
+	 */
+	bool (*force_esd_disable)(void *display);
+
+	/**
+	 * set_param - set display's feature param setting
+	 * @display: Pointer to private display handle
+	 * Returns: Zero for success, negative for failure
+	 */
+	int (*set_param)(void *display, struct msm_param_info *param_info);
 
 	/**
 	 * config_hdr - configure HDR
@@ -789,7 +825,9 @@ int sde_connector_get_panel_vfp(struct drm_connector *connector,
 /**
  * sde_connector_esd_status - helper function to check te status
  * @connector: Pointer to DRM connector object
+ * @esd_recovery: true: trigger ESD recovery as reporting panel_dead
  */
-int sde_connector_esd_status(struct drm_connector *connector);
+int sde_connector_esd_status(struct drm_connector *connector,
+	bool esd_recovery);
 
 #endif /* _SDE_CONNECTOR_H_ */

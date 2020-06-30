@@ -429,8 +429,10 @@ void sde_connector_schedule_status_work(struct drm_connector *connector,
 		return;
 
 	sde_connector_get_info(connector, &info);
-	if (c_conn->ops.check_status &&
-		(info.capabilities & MSM_DISPLAY_ESD_ENABLED)) {
+	if ((c_conn->ops.force_esd_disable &&
+		(c_conn->ops.force_esd_disable(c_conn->display) == false)) &&
+		(c_conn->ops.check_status &&
+		(info.capabilities & MSM_DISPLAY_ESD_ENABLED))) {
 		if (en) {
 			u32 interval;
 
@@ -553,6 +555,24 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 		bl_config->bl_level);
 	rc = c_conn->ops.set_backlight(dsi_display, bl_config->bl_level);
 	c_conn->unset_bl_level = 0;
+
+	return rc;
+}
+
+static int _sde_connector_update_param(struct sde_connector *c_conn,
+			struct msm_param_info *param_info)
+{
+	struct dsi_display *dsi_display;
+	int rc = 0;
+
+	if (!c_conn) {
+		SDE_ERROR("Invalid params sde_connector null\n");
+		return -EINVAL;
+	}
+
+	dsi_display = c_conn->display;
+	if (dsi_display && c_conn->ops.set_param)
+		rc = c_conn->ops.set_param(dsi_display, param_info);
 
 	return rc;
 }
@@ -1096,6 +1116,7 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 	struct sde_connector_state *c_state;
 	int idx, rc;
 	uint64_t fence_fd;
+	struct msm_param_info param_info;
 
 	if (!connector || !state || !property) {
 		SDE_ERROR("invalid argument(s), conn %pK, state %pK, prp %pK\n",
@@ -1172,6 +1193,30 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 	case CONNECTOR_PROP_AD_BL_SCALE:
 		c_conn->bl_scale_ad = val;
 		c_conn->bl_scale_dirty = true;
+		break;
+	case CONNECTOR_PROP_HBM:
+		param_info.value = val;
+		param_info.param_idx = PARAM_HBM_ID;
+		param_info.param_conn_idx = CONNECTOR_PROP_HBM;
+		rc = _sde_connector_update_param(c_conn, &param_info);
+		if (rc)
+			goto end;
+		break;
+	case CONNECTOR_PROP_ACL:
+		param_info.value = val;
+		param_info.param_idx = PARAM_ACL_ID;
+		param_info.param_conn_idx = CONNECTOR_PROP_ACL;
+		rc = _sde_connector_update_param(c_conn, &param_info);
+		if (rc)
+			goto end;
+		break;
+	case CONNECTOR_PROP_CABC:
+		param_info.value = val;
+		param_info.param_idx = PARAM_CABC_ID;
+		param_info.param_conn_idx = CONNECTOR_PROP_CABC;
+		rc = _sde_connector_update_param(c_conn, &param_info);
+		if (rc)
+			goto end;
 		break;
 	default:
 		break;
@@ -1687,8 +1732,36 @@ static int sde_connector_init_debugfs(struct drm_connector *connector)
 }
 #endif
 
+static int sde_connector_get_panel_vendor_info(struct drm_connector *connector)
+{
+	struct sde_connector *sde_connector;
+	struct msm_display_info info;
+
+	if (!connector) {
+		SDE_ERROR("invalid connector\n");
+		return -EINVAL;
+	}
+
+	sde_connector = to_sde_connector(connector);
+	sde_connector_get_info(connector, &info);
+	connector->display_info.panel_id = info.panel_id;
+	connector->display_info.panel_ver = info.panel_ver;
+	strncpy(connector->display_info.panel_name, info.panel_name,
+					sizeof(info.panel_name));
+
+	return 0;
+}
+
 static int sde_connector_late_register(struct drm_connector *connector)
 {
+	int ret = 0;
+
+	ret = sde_connector_get_panel_vendor_info(connector);
+	if (ret) {
+		SDE_ERROR("failed to retrieve panel vendor info\n");
+		return ret;
+	}
+
 	return sde_connector_init_debugfs(connector);
 }
 
@@ -1830,10 +1903,11 @@ static void _sde_connector_report_panel_dead(struct sde_connector *conn)
 			conn->base.base.id, conn->encoder->base.id);
 }
 
-int sde_connector_esd_status(struct drm_connector *conn)
+int sde_connector_esd_status(struct drm_connector *conn, bool esd_recovery)
 {
 	struct sde_connector *sde_conn = NULL;
 	int ret = 0;
+	struct dsi_display *dsi_display;
 
 	if (!conn)
 		return ret;
@@ -1847,11 +1921,31 @@ int sde_connector_esd_status(struct drm_connector *conn)
 	ret = sde_conn->ops.check_status(sde_conn->display, true);
 	mutex_unlock(&sde_conn->lock);
 
+	SDE_DEBUG("check_status returns ret=%d\n", ret);
 	if (ret <= 0) {
-		/* cancel if any pending esd work */
-		sde_connector_schedule_status_work(conn, false);
-		_sde_connector_report_panel_dead(sde_conn);
+		/* esd_recovery is set when ESD detection/recovery is needed */
+		if (esd_recovery == true) {
+			/* cancel if any pending esd work */
+			sde_connector_schedule_status_work(conn, false);
+			_sde_connector_report_panel_dead(sde_conn);
+		} else {
+			/*
+			 * When esd_recovery is NOT set, when this API is just
+			 * checking the ESD recovery status, specially checking
+			 * for the ESD TE. In the ops.check_status() will
+			 * set esd_recovery_pending when there still have ESD
+			 * issue. At this point, the ESD detection still detect
+			 * the ESD, therefore esd_recovery_pending needs to be
+			 * cleared
+			 */
+			SDE_DEBUG("esd_recovery = FALSE, need to clear esd_recovery_pending flag\n");
+			dsi_display = sde_conn->display;
+			atomic_set(&dsi_display->panel->esd_recovery_pending,
+						0);
+		}
 		ret = -ETIMEDOUT;
+	} else if (ret == SDE_ESD_PENDING) {
+		SDE_DEBUG("ESD recovery still is pending, do nothing\n");
 	} else {
 		SDE_DEBUG("Successfully received TE from panel\n");
 		ret = 0;
@@ -1990,6 +2084,57 @@ static int sde_connector_populate_mode_info(struct drm_connector *conn,
 	}
 
 	return rc;
+}
+
+static int sde_connector_install_panel_params(struct sde_connector *c_conn)
+{
+	struct panel_param *param_cmds;
+	uint32_t prop_idx;
+	int i;
+	struct dsi_display *dsi_display;
+	u16 prop_max, prop_min, prop_init;
+
+	if (c_conn->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return 0;
+
+	dsi_display = (struct dsi_display *) (c_conn->display);
+	param_cmds = dsi_display->panel->param_cmds;
+	for (i = 0; i < PARAM_ID_NUM; i++) {
+		pr_debug("%s:i = %d param_name = %s is_support=%d\n",
+			__func__, i,
+                        param_cmds->param_name, param_cmds->is_supported);
+
+		if (!strncmp(param_cmds->param_name, "HBM", 3))
+			prop_idx = CONNECTOR_PROP_HBM;
+		else if (!strncmp(param_cmds->param_name, "CABC", 4))
+			prop_idx = CONNECTOR_PROP_CABC;
+		else if (!strncmp(param_cmds->param_name, "ACL", 3))
+			prop_idx = CONNECTOR_PROP_ACL;
+		else {
+			SDE_ERROR("Invalid param_name =%s\n",
+						param_cmds->param_name);
+			return -EINVAL;
+		}
+
+		if (param_cmds->is_supported) {
+			prop_max = param_cmds->val_max;
+			prop_min = PARAM_STATE_OFF;
+			prop_init = param_cmds->default_value;
+		} else {
+			prop_max = PARAM_STATE_OFF;
+			prop_min = PARAM_STATE_OFF;
+			prop_init = PARAM_STATE_DISABLE;
+		}
+
+		msm_property_install_volatile_range( &c_conn->property_info,
+					param_cmds->param_name, 0x0,
+					prop_min, prop_max,
+					prop_init, prop_idx);
+
+		param_cmds++;
+	}
+
+	return 0;
 }
 
 int sde_connector_set_blob_data(struct drm_connector *conn,
@@ -2220,6 +2365,14 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 				sizeof(dsi_display->panel->hdr_props),
 				CONNECTOR_PROP_HDR_INFO);
 		}
+	}
+
+	rc = sde_connector_install_panel_params(c_conn);
+	if (rc) {
+		SDE_ERROR_CONN(c_conn,
+			"failed to install property for panel params. rc =%d\n",
+							rc);
+			goto error_cleanup_fence;
 	}
 
 	rc = sde_connector_get_info(&c_conn->base, &display_info);

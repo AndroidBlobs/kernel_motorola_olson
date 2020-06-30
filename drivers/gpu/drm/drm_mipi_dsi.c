@@ -445,6 +445,8 @@ EXPORT_SYMBOL(mipi_dsi_packet_format_is_long);
 int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 			   const struct mipi_dsi_msg *msg)
 {
+	const u8 *dsi_buf;
+
 	if (!packet || !msg)
 		return -EINVAL;
 
@@ -455,6 +457,13 @@ int mipi_dsi_create_packet(struct mipi_dsi_packet *packet,
 
 	if (msg->channel > 3)
 		return -EINVAL;
+
+	dsi_buf = msg->tx_buf;
+	if ((dsi_buf[0] == MIPI_DCS_READ_MEMORY_START) ||
+		(dsi_buf[0] == MIPI_DCS_READ_MEMORY_CONTINUE)) {
+                pr_debug("%s: Invalid dsi_cmd=0x%4x\n", __func__, dsi_buf[0]);
+                return -EINVAL;
+        }
 
 	memset(packet, 0, sizeof(*packet));
 	packet->header[2] = ((msg->channel & 0x3) << 6) | (msg->type & 0x3f);
@@ -1066,6 +1075,29 @@ int mipi_dsi_dcs_set_display_brightness(struct mipi_dsi_device *dsi,
 	return 0;
 }
 EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness);
+
+/**
+ * mipi_dsi_dcs_set_display_brightness_2bytes() - sets the brightness value of
+ *    the display with 2bytes value
+ * @dsi: DSI peripheral device
+ * @brightness: brightness value
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int mipi_dsi_dcs_set_display_brightness_2bytes(struct mipi_dsi_device *dsi,
+                                        u16 brightness)
+{
+	u8 payload[2] = { (brightness & 0xff00) >> 8, brightness & 0xff};
+	ssize_t err;
+
+	err = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				payload, sizeof(payload));
+	if (err < 0)
+		return err;
+
+	return 0;
+}
+EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness_2bytes);
 
 /**
  * mipi_dsi_dcs_get_display_brightness() - gets the current brightness value

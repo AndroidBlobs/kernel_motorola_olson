@@ -111,7 +111,7 @@
 #define SDE_KMS_OPS_PREPARE_PLANE_FB		BIT(3)
 
 /* ESD status check interval in miliseconds */
-#define STATUS_CHECK_INTERVAL_MS 5000
+#define STATUS_CHECK_INTERVAL_MS 8000
 
 /**
  * enum sde_kms_smmu_state:	smmu state
@@ -273,6 +273,7 @@ struct sde_kms {
 	struct sde_rm rm;
 	bool rm_init;
 	struct sde_splash_data splash_data;
+	struct sde_splash_data splash_data_secDisp;
 	struct sde_hw_vbif *hw_vbif[VBIF_MAX];
 	struct sde_hw_mdp *hw_mdp;
 	int dsi_display_count;
